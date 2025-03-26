@@ -89,4 +89,4 @@ const enableTrackingForAllVariants = async () => {
   console.log(`✅ Finished. ${count} variants updated.`)
 }
 
-enableTrackingForAllVariants()
+module.exports = { enableTrackingForAllVariants }
