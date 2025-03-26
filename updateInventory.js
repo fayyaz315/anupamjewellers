@@ -17,29 +17,34 @@ const normalizeSku = (str) => str ? str.trim().replace(/\s+/g, "").toUpperCase()
 const enableInventoryTracking = async (variantId) => {
     try {
         const url = `${SHOPIFY_API_URL}/variants/${variantId.replace("gid://shopify/ProductVariant/", "")}.json`
-        const response = await axios.put(
-            url,
-            {
-                variant: {
-                    id: variantId.replace("gid://shopify/ProductVariant/", ""),
-                    inventory_management: "shopify"
-                }
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN
-                }
+
+        const response = await axios.get(url, {
+            headers: {
+                "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN
             }
-        )
-        console.log(`✅ Enabled inventory tracking for variant ${variantId}`)
+        })
+
+        const currentTracking = response.data?.variant?.inventory_management
+        if (currentTracking !== "shopify") {
+            await axios.put(
+                url,
+                { variant: { inventory_management: "shopify" } },
+                {
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN
+                    }
+                }
+            )
+            console.log(`✅ Enabled inventory tracking for variant ${variantId}`)
+        }
     } catch (error) {
         console.error(`❌ Failed to enable inventory tracking for ${variantId}:`, error.response?.data || error.message)
     }
 }
 
 // ✅ Update Shopify inventory
-const updateShopifyInventory = async (inventoryItemId, variantId, newQuantity) => {
+const updateShopifyInventory = async (inventoryItemId, newQuantity) => {
     try {
         const url = `${SHOPIFY_API_URL}/inventory_levels/set.json`
         await axios.post(
@@ -58,15 +63,7 @@ const updateShopifyInventory = async (inventoryItemId, variantId, newQuantity) =
         )
         console.log(`✅ Updated inventory for ${inventoryItemId} to ${newQuantity}`)
     } catch (error) {
-        const errorMessage = error.response?.data || error.message
-        console.error(`❌ Failed to update inventory for ${inventoryItemId}:`, errorMessage)
-
-        // If tracking is not enabled, enable it first
-        if (errorMessage?.errors?.includes("Inventory item does not have inventory tracking enabled")) {
-            console.log(`🔄 Enabling inventory tracking for ${variantId} and retrying update...`)
-            await enableInventoryTracking(variantId)
-            await updateShopifyInventory(inventoryItemId, variantId, newQuantity) // Retry update
-        }
+        console.error(`❌ Failed to update inventory for ${inventoryItemId}:`, error.response?.data || error.message)
     }
 }
 
@@ -83,6 +80,13 @@ const processInventoryUpdate = async () => {
 
     console.log("🔄 Reading Shopify inventory data...")
     const shopifyInventory = JSON.parse(fs.readFileSync(SHOPIFY_INVENTORY_PATH, "utf-8"))
+    const shopifyMap = new Map()
+
+    for (const item of shopifyInventory) {
+        if (item.sku) {
+            shopifyMap.set(normalizeSku(item.sku), item)
+        }
+    }
 
     console.log("🔄 Reading CSV inventory data...")
     const csvData = []
@@ -94,9 +98,9 @@ const processInventoryUpdate = async () => {
 
             for (const product of csvData) {
                 const csvSku = normalizeSku(product.ItemCode)
-                const csvStock = product.InStock.trim().toUpperCase() === "Y" ? 10 : 0
+                const csvStock = product.InStock?.trim().toUpperCase() === "Y" ? 10 : 0
 
-                const shopifyProduct = shopifyInventory.find((p) => normalizeSku(p.sku) === csvSku)
+                const shopifyProduct = shopifyMap.get(csvSku)
 
                 if (!shopifyProduct) {
                     console.warn(`⚠️ SKU mismatch: CSV '${csvSku}' not found in Shopify inventory.`)
@@ -104,8 +108,9 @@ const processInventoryUpdate = async () => {
                 }
 
                 if (shopifyProduct.inventory_quantity !== csvStock) {
+                    await enableInventoryTracking(shopifyProduct.variant_id)
                     console.log(`🔄 Updating Shopify inventory for ${csvSku} (${shopifyProduct.inventory_item_id})`)
-                    await updateShopifyInventory(shopifyProduct.inventory_item_id, shopifyProduct.variant_id, csvStock)
+                    await updateShopifyInventory(shopifyProduct.inventory_item_id, csvStock)
                 } else {
                     console.log(`✅ Inventory already up-to-date for ${csvSku}`)
                 }
@@ -113,5 +118,4 @@ const processInventoryUpdate = async () => {
         })
 }
 
-// ✅ Run the function
 module.exports = { processInventoryUpdate }
