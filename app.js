@@ -86,7 +86,6 @@ const runCycle = async () => {
 // Run the first cycle
 runCycle()
 
-runCycle()
 
 app.use('/api', webhookRoutes);
 app.use('/api', arRoutes);
