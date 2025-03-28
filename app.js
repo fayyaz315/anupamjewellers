@@ -50,11 +50,9 @@ const { requestProductCSVToFTP } = require("./requestCSV")
 const { downloadLatestZip } = require("./downloadLatestZip")
 const { processInventoryUpdate } = require("./updateInventory");
 const { fetchShopifyInventory } = require('./fetchShopifyInventory');
-const { enableTrackingForAllVariants } = require('./enableAllTracking');
 
 
 const runCycle = async () => {
-    await enableTrackingForAllVariants()
     console.log("🟡 Starting inventory sync cycle...")
 
     await cleanupZips()

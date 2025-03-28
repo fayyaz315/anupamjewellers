@@ -3,7 +3,7 @@ const axios = require("axios")
 
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN
-const GRAPHQL_ENDPOINT = `https://${SHOPIFY_STORE}/admin/api/2024-01/graphql.json`
+const GRAPHQL_ENDPOINT = `https://${SHOPIFY_STORE}/admin/api/2025-04/graphql.json`
 
 const GET_PRODUCTS_QUERY = `
 query getProducts($cursor: String) {
@@ -17,7 +17,10 @@ query getProducts($cursor: String) {
             node {
               id
               sku
-              inventoryManagement
+              inventoryItem {
+                id
+                tracked
+              }
             }
           }
         }
@@ -31,54 +34,105 @@ query getProducts($cursor: String) {
 }
 `
 
-const enableTracking = async (variantId) => {
-  const restEndpoint = `https://${SHOPIFY_STORE}/admin/api/2024-01/variants/${variantId.replace("gid://shopify/ProductVariant/", "")}.json`
-
-  try {
-    await axios.put(
-      restEndpoint,
-      {
-        variant: {
-          id: variantId.replace("gid://shopify/ProductVariant/", ""),
-          inventory_management: "shopify"
-        }
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN
-        }
-      }
-    )
-    console.log(`✅ Enabled tracking for variant: ${variantId}`)
-  } catch (err) {
-    console.error(`❌ Failed to enable tracking for ${variantId}:`, err.response?.data || err.message)
+const BULK_UPDATE_MUTATION = `
+mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    product {
+      id
+    }
+    productVariants {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
   }
 }
+`
 
 const enableTrackingForAllVariants = async () => {
-  console.log("🚀 Enabling inventory tracking for all variants...")
+  console.log("🚀 Starting inventory tracking update for untracked variants...\n")
 
   let cursor = null
   let hasNextPage = true
-  let count = 0
+  let updatedProducts = 0
+  let updatedVariants = 0
 
   while (hasNextPage) {
+    console.log("📡 Fetching products page...")
+
     const response = await axios.post(
       GRAPHQL_ENDPOINT,
       { query: GET_PRODUCTS_QUERY, variables: { cursor } },
-      { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN, "Content-Type": "application/json" } }
+      {
+        headers: {
+          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+          'Content-Type': 'application/json'
+        }
+      }
     )
 
-    const products = response.data.data.products
+    const products = response.data?.data?.products
+    if (!products) {
+      console.error("❌ Invalid response from Shopify:", JSON.stringify(response.data, null, 2))
+      throw new Error("Response from Shopify is missing expected 'products' data.")
+    }
+
     for (const product of products.edges) {
-      for (const variant of product.node.variants.edges) {
-        const variantId = variant.node.id
-        const isTracked = variant.node.inventoryManagement === "SHOPIFY"
-        if (!isTracked) {
-          await enableTracking(variantId)
-          count++
+      const productId = product.node.id
+      const title = product.node.title
+
+      const variantsToUpdate = product.node.variants.edges
+        .filter(v => !v.node.inventoryItem.tracked)
+        .map(v => ({
+          id: v.node.id,
+          inventoryManagement: 'SHOPIFY'
+        }))
+
+      if (variantsToUpdate.length === 0) {
+        console.log(`⏭️  Skipping "${title}" — all variants already tracked`)
+        continue
+      }
+
+      console.log(`🔧 Updating ${variantsToUpdate.length} variant(s) for product "${title}"...`)
+
+      try {
+        const updateResponse = await axios.post(
+          GRAPHQL_ENDPOINT,
+          {
+            query: BULK_UPDATE_MUTATION,
+            variables: {
+              productId,
+              variants: variantsToUpdate
+            }
+          },
+          {
+            headers: {
+              'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+
+        const result = updateResponse.data?.data?.productVariantsBulkUpdate
+
+        if (!result) {
+          console.error(`❌ Unexpected response while updating "${title}":`, updateResponse.data)
+          continue
         }
+
+        const { productVariants, userErrors } = result
+
+        if (userErrors.length > 0) {
+          console.error(`❌ Errors updating "${title}":`, userErrors)
+        } else {
+          console.log(`✅ Successfully updated ${productVariants.length} variant(s) for "${title}"`)
+          updatedProducts++
+          updatedVariants += productVariants.length
+        }
+      } catch (err) {
+        console.error(`❌ Failed to update variants for "${title}":`, err.response?.data || err.message)
       }
     }
 
@@ -86,7 +140,7 @@ const enableTrackingForAllVariants = async () => {
     cursor = products.pageInfo.endCursor || null
   }
 
-  console.log(`✅ Finished. ${count} variants updated.`)
+  console.log(`\n🏁 Completed: ${updatedProducts} product(s), ${updatedVariants} variant(s) updated.`)
 }
 
-module.exports = { enableTrackingForAllVariants }
+enableTrackingForAllVariants()
